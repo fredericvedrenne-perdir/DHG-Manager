@@ -4065,10 +4065,9 @@ function renderTeams() {
     if (!t) return;
     t.innerHTML = '';
     
-    // Modification de la légende dans le header de la carte (DOM parent)
+    // Modification de la légende (inchangé)
     const legendContainer = t.closest('.card').querySelector('.card-header div[style*="font-style:italic"]');
     if (legendContainer) {
-        // On recrée la légende avec le nouveau terme
         legendContainer.innerHTML = `
             <span style="display:flex; align-items:center;"><span style="width:12px; height:12px; background:#27ae60; margin-right:4px;"></span>Classe</span>
             <span style="display:flex; align-items:center; margin-left:10px;"><span style="width:12px; height:12px; background:#3498db; margin-right:4px;"></span>Partage de classe</span>
@@ -4077,6 +4076,7 @@ function renderTeams() {
         `;
     }
 
+    // Construction du Header (inchangé)
     let headerHTML = '<thead><tr><th style="min-width:220px; text-align:left; padding-left:10px;">Matière / Enseignant</th>';
     DATA.structure.forEach(lvl => {
         const prefix = getLevelPrefix(lvl.level);
@@ -4092,6 +4092,8 @@ function renderTeams() {
     const body = document.createElement('tbody');
     const roots = DATA.subjects.filter(s => !DATA.subjectMeta[s]?.parent).sort();
     const organized = [];
+    
+    // Organisation hiérarchique
     roots.forEach(r => { 
         organized.push({name: r, isChild: false}); 
         DATA.subjects.filter(s => DATA.subjectMeta[s]?.parent === r).forEach(c => organized.push({name: c, isChild: true, parent: r})); 
@@ -4102,6 +4104,7 @@ function renderTeams() {
         const meta = DATA.subjectMeta[sub] || {};
         let isSubjectVisible = false;
 
+        // Vérification de visibilité (inchangé)
         DATA.structure.forEach(lvl => {
             const prefix = getLevelPrefix(lvl.level);
             for(let i=0; i<lvl.div; i++) {
@@ -4112,11 +4115,39 @@ function renderTeams() {
         
         if (!isSubjectVisible) return;
 
+        // Titre de la section Matière
         body.innerHTML += `<tr class="team-subject-row"><td colspan="100%">${sub}</td></tr>`;
-        const profs = DATA.teachers.map((p, idx) => ({...p, idx})).filter(p => p.subject === sub);
+
+        // --- NOUVELLE LOGIQUE DE FUSION ---
         
+        // 1. Les titulaires
+        const mainProfs = DATA.teachers
+            .map((p, idx) => ({...p, idx}))
+            .filter(p => p.subject === sub);
+            
+        // 2. Les invités (Disciplines associées)
+        let guestProfs = [];
+        if (meta.linkedSubjects && meta.linkedSubjects.length > 0) {
+            guestProfs = DATA.teachers
+                .map((p, idx) => ({...p, idx}))
+                .filter(p => meta.linkedSubjects.includes(p.subject));
+        }
+
+        // 3. Fusion et Tri
+        const profs = [...mainProfs, ...guestProfs].sort((a, b) => a.name.localeCompare(b.name));
+        
+        // ----------------------------------
+
         profs.forEach(p => {
-            let rowHTML = `<tr><td class="team-teacher-label" title="${p.name}">${p.name}</td>`;
+            // Affichage distinctif pour les invités
+            let displayName = p.name;
+            if (p.subject !== sub) {
+                displayName += ` <span style="font-size:0.75rem; color:#e67e22; font-weight:normal;">(${p.subject})</span>`;
+            }
+
+            let rowHTML = `<tr><td class="team-teacher-label" title="${p.name}">${displayName}</td>`;
+            
+            // Génération des cellules (Logique inchangée)
             DATA.structure.forEach(lvl => {
                 const prefix = getLevelPrefix(lvl.level);
                 for(let i=0; i<lvl.div; i++) {
@@ -4127,11 +4158,11 @@ function renderTeams() {
                     
                     let cellClass = "cell-assign";
                     let content = "";
+                    
                     if (hours <= 0) {
                         cellClass += " cell-disabled";
                     } else if (assign) {
                         cellClass += assign.mode === 'GROUP' ? " mode-group" : " mode-class";
-                        // Ici on garde l'icône, c'est plus propre qu'un texte long
                         content = assign.mode === 'GROUP' ? "👥" : "✅";
                         if(assign.isPP) cellClass += " is-pp";
                     } else {
@@ -4146,6 +4177,7 @@ function renderTeams() {
             body.innerHTML += rowHTML;
         });
 
+        // Cas vide (inchangé)
         if(profs.length === 0) {
             let rowHTML = `<tr><td class="team-teacher-label" style="font-style:italic; color:#999;">(Aucun enseignant)</td>`;
             DATA.structure.forEach(lvl => {
