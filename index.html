@@ -1514,23 +1514,37 @@ function renderStructure() {
 function updStruct(i,f,v) { DATA.structure[i][f] = parseFloat(v); if(f==='div') generateClasses(false); saveData(); renderStructure(); }
 function updSupp(val) { if(!DATA.additionalMeans) DATA.additionalMeans = { total: 0 }; DATA.additionalMeans.total = parseFloat(val) || 0; saveData(); renderStructure(); }
 function generateClasses(conf) {
-    if(conf && !confirm("⚠️ Attention : Cela va réinitialiser les noms des classes.\nContinuer ?")) return;
+    // Si on clique sur le bouton "Régénérer", on force le reset (avec confirmation)
+    if(conf) {
+        if(!confirm("⚠️ Attention : Cela va réinitialiser les noms des classes.\nContinuer ?")) return;
+        DATA.classNames = {};
+    }
+
+    // Sécurité si l'objet n'existe pas
+    if(!DATA.classNames) DATA.classNames = {};
     
-    // 1. On récupère les préfixes GARANTIS UNIQUES
+    // 1. On récupère les préfixes
     const allPrefixes = getAllUniquePrefixes();
     
-    // 2. On vide les anciens noms
-    DATA.classNames = {};
-    
-    // 3. On régénère proprement
+    // 2. On parcourt la structure pour AJOUTER ou GARDER les classes
     DATA.structure.forEach((lvl, idx) => {
-        const prefix = allPrefixes[idx]; // On prend le préfixe unique correspondant à ce niveau
+        const prefix = allPrefixes[idx];
         
         for(let i=0; i<lvl.div; i++) {
             const id = `${prefix}${String.fromCharCode(65+i)}`; // Ex: 12A
-            DATA.classNames[id] = id;
+            
+            // LA CORRECTION EST ICI : 
+            // Si le nom n'existe pas, on le crée. 
+            // S'il existe déjà (ex: "6ème SEGPA"), on ne le touche pas !
+            if (!DATA.classNames[id]) {
+                DATA.classNames[id] = id;
+            }
         }
     });
+    
+    // (Optionnel) Nettoyage : On peut supprimer les classes qui seraient "hors limite" 
+    // si tu réduis le nombre de divisions (ex: passage de 6 à 5 classes), 
+    // mais le plus important est de ne pas écraser les existantes.
     
     saveData();
     renderStructure();
@@ -1544,6 +1558,11 @@ function calculateNeeds() {
     DATA.subjects.forEach(s => {
         const meta = DATA.subjectMeta[s] || { mode: 'div', levels: [] };
         
+        // --- CORRECTIF ANTI-DOUBLON ---
+        // Si c'est un EDS, son besoin est géré par le forfait global, donc ici c'est 0.
+        if (meta.isEds) return; 
+        // ------------------------------
+
         // 1. MODE DIVISION
         if(meta.mode === 'div') {
             DATA.structure.forEach(lvl => {
@@ -1555,7 +1574,6 @@ function calculateNeeds() {
                     
                     for(let i=0; i<lvl.div; i++) {
                         const c = `${prefix}${String.fromCharCode(65+i)}`;
-                        // On vérifie s'il y a une personnalisation (Override)
                         if (DATA.classOverrides[c] && DATA.classOverrides[c][s]) {
                             const ov = DATA.classOverrides[c][s];
                             n[s] += ((ov.base||0) + (ov.marge||0)) * coef;
@@ -1566,7 +1584,7 @@ function calculateNeeds() {
                 }
             });
         }
-        // 2. MODE NIVEAU (Correction : On ne boucle que sur les niveaux actifs)
+        // 2. MODE NIVEAU
         else if (meta.mode === 'level') {
             DATA.structure.forEach(lvl => {
                 const val = meta.volLevel ? parseFloat(meta.volLevel[lvl.level] || 0) : 0;
@@ -2336,37 +2354,206 @@ function loadSaveFile(input) {
         try {
             let loadedData = JSON.parse(e.target.result);
             
-            // 1. Migration structurelle (Ancien moteur V1 -> V2)
-            loadedData = migrateV18toV19(loadedData);
+            // --- MIGRATIONS & INITIALISATIONS ---
+            // On garde les migrations existantes si elles sont définies dans ton code
+            if (typeof migrateV18toV19 === 'function') {
+                loadedData = migrateV18toV19(loadedData);
+            }
             
-            // 2. Initialisation des champs V3 (Si on vient de la V2)
-            if (!loadedData.assignments) loadedData.assignments = {}; // Équipes Pédagogiques
+            // Initialisations V3
+            if (!loadedData.assignments) loadedData.assignments = {}; 
             if (!loadedData.config) loadedData.config = { year: new Date().getFullYear(), total: 0, hp: 0, hsa: 0 };
-            
-            // Mise à jour des profs pour V3 (Décharges externes)
             if (loadedData.teachers) {
                 loadedData.teachers.forEach(p => {
                     if (p.csd === undefined) p.csd = 0;
                     if (p.decharge === undefined) p.decharge = 0;
-                    if (p.dech_ext === undefined) p.dech_ext = 0; // Nouveau champ V3
+                    if (p.dech_ext === undefined) p.dech_ext = 0; 
                 });
             }
 
+            // --- CHARGEMENT EN MÉMOIRE ---
             DATA = loadedData;
-            saveData(); 
+
+            // --- DÉTECTION INTELLIGENTE (LGT vs COLLÈGE) ---
+            let isLGT = false;
+            // On sécurise la lecture de la structure pour éviter le bug "Fichier corrompu"
+            if (DATA.structure && Array.isArray(DATA.structure)) {
+                isLGT = DATA.structure.some(lvl => {
+                    // On gère les deux noms de propriétés possibles (.level ou .name)
+                    const nom = lvl.level || lvl.name || ""; 
+                    return nom.includes("1ère") || nom.includes("Terminale");
+                });
+            }
+
+            // --- DÉCISION ---
+            if (isLGT) {
+                // Cas LGT : On sauvegarde et on lance l'assistant de nettoyage
+                saveData(); 
+                alert("✅ Fichier chargé ! Une étape de vérification des Spécialités va s'ouvrir pour nettoyer votre grille.");
+                
+                if (typeof showEdsIdentificationModal === 'function') {
+                    showEdsIdentificationModal(); 
+                } else {
+                    console.error("Fonction showEdsIdentificationModal introuvable, rechargement standard.");
+                    location.reload();
+                }
+                return; // STOP : On ne recharge pas la page tout de suite
+            }
             
-            // Message mis à jour
-            alert("✅ Fichier chargé et mis à jour vers la version actuelle avec succès !");
+            // Cas Autre (Collège) : On termine normalement
+            saveData();
+            alert("✅ Fichier chargé avec succès !");
             location.reload();
+            
         } catch (err) {
-            console.error(err);
-            alert("❌ Erreur : Le fichier semble corrompu ou illisible.");
+            console.error("Erreur import:", err);
+            alert("❌ Erreur : Le fichier semble corrompu ou illisible.\n(Détails dans la console F12)");
         }
     };
     r.readAsText(f);
     input.value = '';
 }
 
+
+function showEdsIdentificationModal() {
+    // 1. Création de l'interface (Overlay + Fenêtre)
+    const overlay = document.createElement('div');
+    overlay.id = 'eds-check-overlay';
+    overlay.style = `
+        position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+        background: rgba(0,0,0,0.85); z-index: 10000;
+        display: flex; justify-content: center; align-items: center;
+    `;
+
+    const modal = document.createElement('div');
+    modal.style = `
+        background: white; padding: 25px; border-radius: 12px;
+        width: 600px; max-height: 90vh; display: flex; flex-direction: column;
+        box-shadow: 0 10px 40px rgba(0,0,0,0.5); font-family: 'Segoe UI', sans-serif;
+    `;
+
+    // 2. Contenu HTML de la fenêtre
+    modal.innerHTML = `
+        <h2 style="margin-top:0; color:#2c3e50;">🧹 Nettoyage de la Grille (LGT)</h2>
+        <p style="color:#666; font-size:0.9rem; margin-bottom:20px;">
+            Cochez les matières qui sont des <strong>Spécialités (EDS)</strong>.<br>
+            <em>Elles seront masquées de la grille horaire principale pour éviter les doublons et alléger l'affichage.</em>
+        </p>
+        <div style="flex:1; overflow-y:auto; border:1px solid #eee; border-radius:8px; padding:10px; margin-bottom:20px;" id="eds-check-list">
+            </div>
+        <div style="display:flex; justify-content:flex-end; gap:10px;">
+            <button id="btn-skip-eds" style="padding:10px 20px; background:#bdc3c7; border:none; border-radius:6px; cursor:pointer; font-weight:bold; color:white;">Passer (Tout garder)</button>
+            <button id="btn-save-eds" style="padding:10px 20px; background:#27ae60; border:none; border-radius:6px; cursor:pointer; font-weight:bold; color:white;">Valider & Masquer</button>
+        </div>
+    `;
+
+    // 3. Génération de la liste des matières
+    const listContainer = modal.querySelector('#eds-check-list');
+    const sortedSubjects = DATA.subjects.slice().sort(); // Tri alphabétique
+
+    let htmlTable = `<table style="width:100%; border-collapse:collapse;">
+        <tr style="background:#f8f9fa; text-align:left; color:#7f8c8d;">
+            <th style="padding:8px;">Matière</th>
+            <th style="padding:8px; text-align:center;">Masquer en 1ère ?</th>
+            <th style="padding:8px; text-align:center;">Masquer en Term ?</th>
+        </tr>`;
+
+    sortedSubjects.forEach(sub => {
+        const meta = DATA.subjectMeta[sub] || {};
+        
+        // On essaye de deviner si c'est déjà un EDS pour pré-cocher
+        const isLikelyEds = meta.isEds || meta.parent === "Spécialités";
+        const hasPrem = meta.levels && meta.levels.some(l => l.includes('1ère'));
+        const hasTerm = meta.levels && meta.levels.some(l => l.includes('Term'));
+
+        htmlTable += `
+            <tr style="border-bottom:1px solid #eee;">
+                <td style="padding:8px; font-weight:500;">${sub}</td>
+                <td style="padding:8px; text-align:center;">
+                    <input type="checkbox" class="chk-prem" data-sub="${sub}" 
+                           ${(isLikelyEds && hasPrem) ? 'checked' : ''} 
+                           style="transform:scale(1.3); cursor:pointer;">
+                </td>
+                <td style="padding:8px; text-align:center;">
+                    <input type="checkbox" class="chk-term" data-sub="${sub}" 
+                           ${(isLikelyEds && hasTerm) ? 'checked' : ''} 
+                           style="transform:scale(1.3); cursor:pointer;">
+                </td>
+            </tr>
+        `;
+    });
+    htmlTable += `</table>`;
+    listContainer.innerHTML = htmlTable;
+
+    overlay.appendChild(modal);
+    document.body.appendChild(overlay);
+
+    // --- 4. GESTION DES CLICS ---
+
+    // Bouton "Passer"
+    document.getElementById('btn-skip-eds').onclick = () => {
+        if(confirm("Aucune matière ne sera masquée. Continuer ?")) {
+            document.body.removeChild(overlay);
+            location.reload();
+        }
+    };
+
+    // Bouton "Valider" (Logique de Nettoyage Uniquement)
+    document.getElementById('btn-save-eds').onclick = () => {
+        const rows = listContainer.querySelectorAll('tr');
+        
+        // On parcourt chaque ligne du tableau (sauf l'en-tête)
+        for (let i = 1; i < rows.length; i++) {
+            const row = rows[i];
+            const chkPrem = row.querySelector('.chk-prem');
+            const chkTerm = row.querySelector('.chk-term');
+            const subjectName = chkPrem.getAttribute('data-sub');
+            
+            // Si au moins une case est cochée pour cette matière
+            if (chkPrem.checked || chkTerm.checked) {
+                if (!DATA.subjectMeta[subjectName]) DATA.subjectMeta[subjectName] = {};
+                
+                // A. On active le masquage (isEds)
+                DATA.subjectMeta[subjectName].isEds = true;
+                DATA.subjectMeta[subjectName].mode = 'level';
+                DATA.subjectMeta[subjectName].parent = "Spécialités";
+                
+                // B. On supprime les heures manuelles de la grille (Nettoyage)
+                DATA.subjectMeta[subjectName].volLevel = {}; 
+
+                // C. On met à jour les niveaux concernés
+                let levels = [];
+                if (chkPrem.checked) levels.push("1ère");
+                if (chkTerm.checked) levels.push("Terminale");
+                DATA.subjectMeta[subjectName].levels = levels;
+                
+                // NOTE : On n'ajoute PAS la matière dans le tableau EDS du bas (DATA.eds).
+                // Elle est juste masquée de la grille principale.
+            }
+        }
+
+        saveData();
+        alert("✅ Grille nettoyée ! Les matières sélectionnées ont été masquées.");
+        document.body.removeChild(overlay);
+        location.reload(); // Rechargement final pour afficher le résultat
+    };
+}
+
+// Fonction utilitaire pour créer l'entrée dans le tableau EDS du bas si elle n'existe pas
+function ensureEdsExistsInManager(levelCode, subjectName) {
+    if (!DATA.eds) DATA.eds = { premiere: [], terminale: [] };
+    if (!DATA.eds[levelCode]) DATA.eds[levelCode] = [];
+
+    const exists = DATA.eds[levelCode].some(e => e.name === subjectName);
+    if (!exists) {
+        DATA.eds[levelCode].push({
+            name: subjectName,
+            students: 0,
+            groups: 0,
+            hPerGroup: (levelCode === 'premiere' ? 4 : 6) // Forfait par défaut (4h ou 6h)
+        });
+    }
+}
 function migrateV18toV19(data) {
     if (!data.subjects || !data.structure) return data;
     const allLevels = data.structure.map(l => l.level);
@@ -2843,8 +3030,10 @@ function calculateRecap() {
         if (csd > 0) autoComments[p.subject].push(`CSD ${p.name} ${csd}h`);
     }); 
     
-    // Initialisation des totaux globaux (On inclut les EDS dès le départ)
-    let globalNeed = totalHeuresEDS, totalApport = totalHeuresEDS, totalHSA = 0;
+    // --- CORRECTIF ICI ---
+    // On initialise l'apport à 0 (ce sont les profs qui vont le remplir plus bas)
+    let globalNeed = totalHeuresEDS, totalApport = 0, totalHSA = 0;
+    // ---------------------
 
     // 4. Fonction de rendu des lignes (Restauration de votre logique visuelle)
     const renderRow = (s, label, isPole, isChild) => {
@@ -2905,11 +3094,11 @@ function calculateRecap() {
         t.innerHTML += `<tr class="row-header" style="background:#2c3e50; color:white;">
             <td style="text-align:left; font-weight:bold;">🎓 ENVELOPPE SPÉCIALITÉS (EDS)</td>
             <td style="color:#f1c40f;">${totalHeuresEDS.toFixed(1)}</td>
-            <td style="color:#81d4fa;">${totalHeuresEDS.toFixed(1)}</td>
-            <td>${totalHeuresEDS.toFixed(1)}</td>
-            <td>0.0</td>
-            <td style="color:#2ecc71;">0.0</td>
-            <td style="font-size:0.8rem; font-style:italic;">Volume calculé via menu EDS</td>
+            <td style="color:#81d4fa;">-</td>
+            <td>-</td>
+            <td>-</td>
+            <td style="color:#e74c3c;">-${totalHeuresEDS.toFixed(1)}</td>
+            <td style="font-size:0.8rem; font-style:italic;">Besoin global à couvrir par les matières ci-dessous</td>
         </tr>`;
     }
 
@@ -2988,7 +3177,6 @@ function calculateRecap() {
         document.getElementById('global-hsa-percent-display').innerText = ratio.toFixed(1) + "%";
     }
 }
-
 function renderFinalKPIs(need, apport, hsa) {
     const totalEl = document.getElementById('recap-total');
     if(totalEl) {
@@ -4541,10 +4729,10 @@ function exportTeamsGridPDF(orientation, format, forceOnePage) {
 function updateGridCounter() {
     if (!DATA) return;
 
-    // --- 1. CALCUL GLOBAL ÉTABLISSEMENT (Pour le Dashboard) ---
+    // --- 1. CALCUL GLOBAL ÉTABLISSEMENT ---
     let totalConsoEtab = 0;
     
-    // Ajout des EDS
+    // A. Ajout des EDS (Le forfait global)
     if (DATA.type !== 'college' && DATA.eds) {
         ['premiere', 'terminale'].forEach(lvl => {
             if (DATA.eds[lvl]) {
@@ -4556,13 +4744,16 @@ function updateGridCounter() {
         });
     }
 
-    // Ajout du Tronc Commun (Toutes les divisions)
+    // B. Ajout du Tronc Commun (On ignore les matières EDS ici)
     DATA.structure.forEach(lvl => {
         const prefix = getLevelPrefix(lvl.level);
         for(let i=0; i<lvl.div; i++) {
             const cId = `${prefix}${String.fromCharCode(65+i)}`;
             DATA.subjects.forEach(s => {
                 const meta = DATA.subjectMeta[s];
+                // CORRECTIF : On saute si c'est un EDS
+                if (meta && meta.isEds) return; 
+
                 if (meta && meta.mode === 'div') {
                     const cfg = (DATA.classOverrides && DATA.classOverrides[cId] && DATA.classOverrides[cId][s]) 
                                 ? DATA.classOverrides[cId][s] 
@@ -4573,20 +4764,23 @@ function updateGridCounter() {
         }
         DATA.subjects.forEach(s => {
              const meta = DATA.subjectMeta[s];
+             // CORRECTIF : On saute si c'est un EDS
+             if (meta && meta.isEds) return;
+
              if (meta && meta.mode === 'level' && meta.volLevel && meta.volLevel[lvl.level]) {
                  totalConsoEtab += parseFloat(meta.volLevel[lvl.level] || 0);
              }
         });
     });
 
-    // Ajout décharges DGH et forfaits Établissement
+    // C. Ajout décharges et forfaits Etab
     DATA.subjects.forEach(s => { 
         if(DATA.subjectMeta[s] && DATA.subjectMeta[s].mode === 'etab') 
             totalConsoEtab += parseFloat(DATA.subjectMeta[s].etab || 0); 
     });
     DATA.teachers.forEach(t => { totalConsoEtab += parseFloat(t.decharge || 0); });
 
-    // Affichage Widget ÉTAB
+    // Mise à jour des Widgets
     const dotationEtab = DATA.config.total || 0;
     const soldeEtab = dotationEtab - totalConsoEtab;
     const etabValEl = document.getElementById('kpi-etab-val');
@@ -4594,25 +4788,20 @@ function updateGridCounter() {
         etabValEl.innerText = `${totalConsoEtab.toFixed(1)} / ${dotationEtab.toFixed(1)} h`;
         updateKpiTag('kpi-etab-diff', soldeEtab);
     }
-
-    // --- 2. LE WIDGET NIVEAU (VERSION MIROIR : LECTURE DIRECTE) ---
+    
+    // (Le reste de la fonction pour le Widget Niveau reste identique...)
     const activeTab = document.querySelector('#grid-tabs .tab.active');
     const levelRow = document.getElementById('kpi-level-row');
-    
     if (!activeTab || activeTab.classList.contains('global-tab')) {
         if (levelRow) levelRow.style.display = 'none';
     } else {
         if (levelRow) levelRow.style.display = 'flex';
         const levelName = activeTab.innerText;
         const lvlObj = DATA.structure.find(l => l.level === levelName);
-        
         if (lvlObj) {
             const dotationNiveau = (lvlObj.div * lvlObj.target); 
-            
-            // ON LIT LA CASE JAUNE EN BAS DE LA GRILLE (ID: total-final-grille)
             const grilleTotalEl = document.getElementById('total-final-grille');
             const consoNiveau = grilleTotalEl ? parseFloat(grilleTotalEl.innerText) : 0;
-            
             const soldeNiveau = dotationNiveau - consoNiveau;
             const lvlValEl = document.getElementById('kpi-lvl-val');
             if (lvlValEl) {
@@ -4763,43 +4952,71 @@ function generateCAPres() {
     s2.addText("1. Structure & Moyens", { x: 0.5, y: 0.3, fontSize: 18, bold: true, color: colors.primary });
     s2.addShape(pptx.ShapeType.line, { x:0.5, y:0.7, w:9, h:0, line:{color:colors.accent, width:2} });
 
+    // 1. On ajoute la colonne H/Div dans les en-têtes (J'ai ajusté les largeurs 'w' pour que ça rentre)
     let structHeaders = [
-        { text: "Niveau", options: { ...headerStyles, fill: colors.secondary, w: 1.2 } },
-        { text: "Eff.", options: { ...headerStyles, fill: colors.secondary, w: 0.8 } },
-        { text: "Div.", options: { ...headerStyles, fill: colors.secondary, w: 0.8 } },
-        { text: "E/D", options: { ...headerStyles, fill: colors.secondary, w: 0.8 } },
-        { text: "Dotation", options: { ...headerStyles, fill: colors.primary, w: 1.2 } }
+        { text: "Niveau", options: { ...headerStyles, fill: colors.secondary, w: 1.1 } },
+        { text: "Eff.", options: { ...headerStyles, fill: colors.secondary, w: 0.7 } },
+        { text: "Div.", options: { ...headerStyles, fill: colors.secondary, w: 0.6 } },
+        { text: "E/D", options: { ...headerStyles, fill: colors.secondary, w: 0.7 } },
+        { text: "H/Div", options: { ...headerStyles, fill: colors.secondary, w: 0.8 } }, // <--- NOUVELLE COLONNE
+        { text: "Dotation", options: { ...headerStyles, fill: colors.primary, w: 1.1 } }
     ];
+
     let structRows = [];
     let totEleves = 0, totDiv = 0, totDot = 0;
+
     DATA.structure.forEach(lvl => {
-        let need = (lvl.div * lvl.target);
-        DATA.subjects.forEach(s => {
-            if(DATA.subjectMeta[s].mode === 'level' && DATA.subjectMeta[s].volLevel && DATA.subjectMeta[s].volLevel[lvl.level]) {
-                need += parseFloat(DATA.subjectMeta[s].volLevel[lvl.level]);
-            }
-        });
+        const div = parseFloat(lvl.div) || 0;
+        const target = parseFloat(lvl.target) || 0; // Le H/E (Heures par division)
+        const students = parseInt(lvl.students) || 0;
+        
+        // Calcul simple : Div x H/Div
+        let need = div * target;
+
         structRows.push([
             { text: lvl.level, options: { bold: true, align: 'left', border: stdBorder } },
-            { text: lvl.students.toString(), options: { border: stdBorder } },
-            { text: lvl.div.toString(), options: { border: stdBorder } },
-            { text: lvl.div > 0 ? (lvl.students/lvl.div).toFixed(1) : "-", options: { border: stdBorder } },
+            { text: students.toString(), options: { border: stdBorder } },
+            { text: div.toString(), options: { border: stdBorder } },
+            { text: div > 0 ? (students/div).toFixed(1) : "-", options: { border: stdBorder } },
+            { text: target.toFixed(1), options: { border: stdBorder, fill: "F4F6F6" } }, // <--- AFFICHAGE H/DIV
             { text: need.toFixed(1), options: { bold: true, color: colors.primary, border: stdBorder } }
         ]);
-        totEleves += lvl.students; totDiv += lvl.div; totDot += need;
+
+        totEleves += students; 
+        totDiv += div; 
+        totDot += need;
     });
+
+    // Gestion des moyens supplémentaires
     const supp = DATA.additionalMeans ? parseFloat(DATA.additionalMeans.total || 0) : 0;
     if(supp > 0) {
-        structRows.push([{ text: "Moyens Supplémentaires", options: { colspan: 4, align: 'right', italic: true, color: "8D6E63", fill: colors.white, border: stdBorder } }, { text: "+ " + supp.toFixed(1), options: { bold: true, color: colors.accent, fill: colors.white, border: stdBorder, align: 'center' } }]);
+        // On met un colspan de 5 pour couvrir jusqu'à la colonne Dotation
+        structRows.push([
+            { text: "Moyens Supplémentaires", options: { colspan: 5, align: 'right', italic: true, color: "8D6E63", fill: colors.white, border: stdBorder } }, 
+            { text: "+ " + supp.toFixed(1), options: { bold: true, color: colors.accent, fill: colors.white, border: stdBorder, align: 'center' } }
+        ]);
         totDot += supp;
     }
-    structRows.push([{ text: "TOTAL", options: { fill: "D5D8DC", bold: true, border: stdBorder } }, { text: totEleves.toString(), options: { fill: "D5D8DC", bold: true, border: stdBorder } }, { text: totDiv.toString(), options: { fill: "D5D8DC", bold: true, border: stdBorder } }, { text: totDiv>0?(totEleves/totDiv).toFixed(1):"-", options: { fill: "D5D8DC", bold: true, border: stdBorder } }, { text: totDot.toFixed(1), options: { fill: "D5D8DC", bold: true, color: colors.primary, border: stdBorder } }]);
-    s2.addTable([structHeaders, ...structRows], { x: 0.5, y: 1.2, w: 4.8, fontSize: 10, rowH: 0.4, align:'center', valign:'middle', fill: { color: colors.tableRowAlt } });
+    
+    // Ligne TOTAL
+    structRows.push([
+        { text: "TOTAL", options: { fill: "D5D8DC", bold: true, border: stdBorder } }, 
+        { text: totEleves.toString(), options: { fill: "D5D8DC", bold: true, border: stdBorder } }, 
+        { text: totDiv.toString(), options: { fill: "D5D8DC", bold: true, border: stdBorder } }, 
+        { text: totDiv>0?(totEleves/totDiv).toFixed(1):"-", options: { fill: "D5D8DC", bold: true, border: stdBorder } }, 
+        { text: "-", options: { fill: "D5D8DC", bold: true, border: stdBorder } }, // Pas de total pour H/Div
+        { text: totDot.toFixed(1), options: { fill: "D5D8DC", bold: true, color: colors.primary, border: stdBorder } }
+    ]);
+    
+    // Génération du tableau (J'ai légèrement élargi le tableau à w: 5.0 pour l'esthétique)
+    s2.addTable([structHeaders, ...structRows], { x: 0.5, y: 1.2, w: 5.0, fontSize: 10, rowH: 0.4, align:'center', valign:'middle', fill: { color: colors.tableRowAlt } });
 
+    // --- Partie Droite (Reste inchangé) ---
     const dhgTotale = parseFloat(DATA.config.total || 0);
     const hp = parseFloat(DATA.config.hp || 0);
     const hsa = parseFloat(DATA.config.hsa || 0);
     const percentHSA = dhgTotale > 0 ? ((hsa / dhgTotale) * 100).toFixed(1) : 0;
+    
     s2.addShape(pptx.ShapeType.rect, { x: 5.8, y: 1.2, w: 3.7, h: 3.5, fill: "F8F9F9", line: {color: colors.border, width: 1} });
     s2.addText("DOTATION GLOBALE", { x: 5.8, y: 1.4, w: 3.7, fontSize: 12, bold: true, color: colors.primary, align: 'center' });
     s2.addText(`${dhgTotale.toFixed(1)} h`, { x: 5.8, y: 1.8, w: 3.7, fontSize: 32, bold: true, color: colors.primary, align: 'center' });
@@ -4808,9 +5025,10 @@ function generateCAPres() {
     s2.addShape(pptx.ShapeType.rect, { x: 6, y: 3.6, w: 3.3, h: 0.6, fill: colors.accent });
     s2.addText(`H.S.A. : ${hsa.toFixed(1)}`, { x: 6, y: 3.6, w: 3.3, h: 0.6, fontSize: 11, color: colors.white, bold: true, align: 'center' });
     s2.addText(`(Taux HSA : ${percentHSA} %)`, { x: 5.8, y: 4.4, w: 3.7, fontSize: 9, color: "7F8C8D", align: 'center', italic:true });
+    
     addFooter(s2, "Structure prévisionnelle");
 
-    // --- 2. DÉTAIL EDS (Lycée uniquement) ---
+    // --- 2. DÉTAIL EDS (Lycée uniquement - Reste inchangé) ---
     const levelsEDS = [{ key: 'premiere', label: 'PREMIÈRE' }, { key: 'terminale', label: 'TERMINALE' }];
     levelsEDS.forEach(lvl => {
         if (DATA.eds && DATA.eds[lvl.key] && DATA.eds[lvl.key].length > 0) {
@@ -5076,12 +5294,19 @@ function addEDS(level) {
 
 function confirmEdsSelection() {
     tempSelectedEds.forEach(name => {
+        // 1. Ajout dans la liste de gestion des EDS (Tableau du bas)
         if (!DATA.eds[currentEdsLevel].some(e => e.name === name)) {
-            DATA.eds[currentEdsLevel].push({ name: name, students: 0, groups: 0, hPerGroup: (currentEdsLevel === 'premiere' ? 4 : 6) });
+            DATA.eds[currentEdsLevel].push({ 
+                name: name, 
+                students: 0, 
+                groups: 0, 
+                hPerGroup: (currentEdsLevel === 'premiere' ? 4 : 6) 
+            });
         }
 
-        // Création de la matière globale pour la gestion RH/Equipes
+        // 2. Gestion de la Matière (Tableau principal)
         if (!DATA.subjects.includes(name)) {
+            // Cas A : La matière n'existe pas, on la crée proprement
             DATA.subjects.push(name);
             DATA.subjectMeta[name] = { 
                 mode: 'level', 
@@ -5090,15 +5315,34 @@ function confirmEdsSelection() {
                 volLevel: {}, 
                 parent: "Spécialités",
                 code: "EDS",
-                isEds: true // Flag pour masquer dans la grille horaire
+                isEds: true // C'est ce flag qui cache la colonne
             };
+        } else {
+            // Cas B : La matière EXISTE DÉJÀ (Saisie manuelle avant)
+            // ==> ON FORCE LA CONVERSION EN EDS
+            if (!DATA.subjectMeta[name]) DATA.subjectMeta[name] = {};
+            
+            DATA.subjectMeta[name].isEds = true; // On force le masquage de la colonne
+            DATA.subjectMeta[name].mode = 'level'; // On force le mode "Niveau"
+            DATA.subjectMeta[name].parent = "Spécialités"; // On la range dans le bon pôle
+            
+            // On s'assure que le niveau actuel est bien activé pour cette matière
+            const lvlLabel = currentEdsLevel === 'premiere' ? '1ère' : 'Terminale';
+            if (!DATA.subjectMeta[name].levels) DATA.subjectMeta[name].levels = [];
+            if (!DATA.subjectMeta[name].levels.includes(lvlLabel)) {
+                DATA.subjectMeta[name].levels.push(lvlLabel);
+            }
         }
     });
+    
     saveData();
-    syncEdsToVentilation();
+    syncEdsToVentilation(); // Synchronise les heures
     renderEDS();
     closeEdsSelector();
+    
+    // Rafraîchit les écrans pour faire disparaître instantanément la colonne en trop
     if(typeof renderSubjectsConfig === 'function') renderSubjectsConfig();
+    if(typeof renderGridSystem === 'function') renderGridSystem();
 }
 
 function closeEdsSelector() {
@@ -5982,7 +6226,68 @@ function closeLinkedSubjectsModal() {
     renderSubjectsConfig();
 }
 
+function sanitizeLegacyData() {
+    if (!DATA.eds) return;
 
+    // 1. Dictionnaire des synonymes courants (Minuscule sans accent -> Nom Officiel EDS)
+    // Cela permet de faire le lien entre "Maths" (saisi main) et "Mathématiques" (EDS)
+    const aliases = {
+        "maths": "Mathématiques",
+        "math": "Mathématiques",
+        "mathematiques": "Mathématiques",
+        "ses": "Sciences Économiques et Sociales",
+        "eco": "Sciences Économiques et Sociales",
+        "nsi": "Numérique et Sciences Informatiques",
+        "si": "Sciences de l'Ingénieur",
+        "svt": "Sciences de la Vie et de la Terre",
+        "bio": "Sciences de la Vie et de la Terre",
+        "llce": "LLCE Anglais", // ou autre langue selon votre menu
+        "amc": "LLCE Anglais Monde Contempo.",
+        "hlp": "Humanités, Littérature et Philosophie",
+        "hggsp": "Histoire-Géo, Géopolitique & SP",
+        "hgg": "Histoire-Géo, Géopolitique & SP",
+        "geopo": "Histoire-Géo, Géopolitique & SP",
+        "physique": "Physique-Chimie",
+        "pc": "Physique-Chimie"
+    };
+
+    // Fonction pour nettoyer une chaine (minuscule, sans accent, sans espace inutile)
+    const cleanStr = (str) => str.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").trim();
+
+    console.log("Nettoyage intelligent des doublons EDS...");
+
+    // On parcourt TOUTES les matières existantes du tableau
+    DATA.subjects.forEach(subjectName => {
+        const cleanName = cleanStr(subjectName);
+        
+        // On vérifie si cette matière correspond à un EDS actif (via Nom Exact ou Alias)
+        ['premiere', 'terminale'].forEach(level => {
+            if (DATA.eds[level]) {
+                DATA.eds[level].forEach(edsItem => {
+                    const cleanEdsName = cleanStr(edsItem.name);
+                    
+                    // Est-ce que ça matche ?
+                    // 1. Nom exact nettoyé (ex: "mathematiques" == "mathematiques")
+                    // 2. Via l'alias (ex: "maths" -> "mathematiques" == "mathematiques")
+                    const isMatch = (cleanName === cleanEdsName) || 
+                                    (aliases[cleanName] === edsItem.name);
+
+                    if (isMatch) {
+                        // BINGO ! C'est un doublon. On cache la matière manuelle.
+                        if (!DATA.subjectMeta[subjectName]) DATA.subjectMeta[subjectName] = {};
+                        
+                        // On applique les tags pour la masquer de la grille
+                        DATA.subjectMeta[subjectName].isEds = true;
+                        DATA.subjectMeta[subjectName].mode = 'level';
+                        DATA.subjectMeta[subjectName].parent = "Spécialités";
+                        
+                        console.log(`Doublon détecté et corrigé : "${subjectName}" est lié à l'EDS "${edsItem.name}"`);
+                    }
+                });
+            }
+        });
+    });
+}
 </script>
 </body>
 </html>
